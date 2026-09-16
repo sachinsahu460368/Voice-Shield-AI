@@ -154,7 +154,7 @@ function App() {
       <div className="login-page">
 
         <div className="login-brand">
-          <div className="brand-icon">🛡️</div>
+          <div className="brand-icon"><img src="/logo.svg" alt="VoiceShield Logo" style={{width: '48px', height: '48px'}} /></div>
           <h1>VoiceShield<span>-AI</span></h1>
           <p>AI-Powered Voice Deepfake Detection</p>
         </div>
@@ -225,7 +225,7 @@ function App() {
       <nav className="navbar">
 
         <div className="logo">
-          <div className="logo-shield">🛡️</div>
+          <div className="logo-shield"><img src="/logo.svg" alt="VoiceShield Logo" style={{ width: '32px', height: '32px', display: 'block' }} /></div>
 
           <div>
             <strong>VoiceShield<span>-AI</span></strong>
@@ -557,7 +557,7 @@ function App() {
 
       <footer id="about">
         <div>
-          <strong>🛡️ VoiceShield-AI</strong>
+          <strong><img src="/logo.svg" alt="VoiceShield Logo" style={{ width: '24px', height: '24px', verticalAlign: 'middle', marginRight: '8px' }} /> VoiceShield-AI</strong>
           <p>
             AI-powered voice deepfake detection platform.
           </p>
