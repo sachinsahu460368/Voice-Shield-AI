@@ -70,6 +70,13 @@ ALLOWED_AUDIO_TYPES = {
     "video/webm",           # .webm video
 }
 
+# ---------- Allowed audio file extensions ----------
+# Fallback for clients (e.g. curl) that send application/octet-stream.
+
+ALLOWED_AUDIO_EXTENSIONS = {
+    ".mp3", ".wav", ".m4a", ".ogg", ".flac", ".webm", ".mp4",
+}
+
 # Max file size: 50 MB
 MAX_FILE_SIZE = 50 * 1024 * 1024
 
@@ -102,14 +109,25 @@ async def analyze_audio(audio: UploadFile = File(...)):
     if not audio or not audio.filename:
         raise HTTPException(status_code=400, detail="No audio file provided.")
 
-    # 2. Check MIME type
+    # 2. Check MIME type, with extension-based fallback for clients
+    #    (e.g. curl) that send application/octet-stream.
     content_type = audio.content_type or ""
+    file_ext = os.path.splitext(audio.filename)[1].lower()
+
     if content_type not in ALLOWED_AUDIO_TYPES:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported file type: {content_type}. "
-                   f"Please upload an audio file (MP3, WAV, M4A, etc.).",
-        )
+        # Allow if the Content-Type is generic but the extension is valid
+        if content_type == "application/octet-stream" and file_ext in ALLOWED_AUDIO_EXTENSIONS:
+            logger.info(
+                "Accepted %s via extension fallback (Content-Type: %s, ext: %s)",
+                audio.filename, content_type, file_ext,
+            )
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported file type: Content-Type '{content_type}', "
+                       f"extension '{file_ext}'. "
+                       f"Please upload an audio file (MP3, WAV, M4A, etc.).",
+            )
 
     # 3. Read file content and check size
     file_content = await audio.read()
