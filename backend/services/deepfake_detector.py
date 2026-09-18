@@ -467,22 +467,20 @@ def _load_model():
     if _model is not None:
         return _model, _device
 
-    logger.info("Loading AASIST-L model")
+    import time as _time
+    _t0 = _time.time()
+    logger.info("Loading AASIST-L model (this may take a few seconds on first call)")
 
     # Check for GPU acceleration via CuPy
     gpu_accel = get_gpu_accelerator()
     if is_gpu_available():
         logger.info("CuPy GPU acceleration available")
 
-    # Determine device (PyTorch - will be CPU since CUDA PyTorch unavailable)
-    # But GPU acceleration will be handled via CuPy at inference time
-    _device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    logger.info(f"Using device: {_device}")
-
-    if _device.type == "cuda":
-        logger.info(f"GPU: {torch.cuda.get_device_name(0)}")
-    elif is_gpu_available():
-        logger.info("GPU: NVIDIA GPU available via CuPy acceleration")
+    # Force CPU — Render has no CUDA runtime and checking torch.cuda.is_available()
+    # wastes time.  CuPy GPU acceleration (if present) is still handled at
+    # inference time by the GPUAccelerator helper.
+    _device = torch.device("cpu")
+    logger.info("Using device: cpu (forced for production safety)")
 
     # Check checkpoint exists
     if not CHECKPOINT_PATH.exists():
@@ -509,7 +507,8 @@ def _load_model():
     try:
         checkpoint = torch.load(CHECKPOINT_PATH, map_location=_device, weights_only=True)
         _model.load_state_dict(checkpoint)
-        logger.info("Model loaded successfully")
+        _elapsed = (_time.time() - _t0) * 1000
+        logger.info("Model loaded successfully in %.0f ms", _elapsed)
     except Exception as e:
         logger.error(f"Failed to load checkpoint: {e}")
         raise

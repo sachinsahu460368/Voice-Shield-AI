@@ -1,236 +1,124 @@
 """
 VoiceShield-AI — Risk Engine Comprehensive Test
 
-Tests the complete pipeline with risk engine aggregation:
-AASIST-L windowing → Risk Engine → Final Verdict
+Tests the windowing → risk engine pipeline:
+AASIST-L long-audio windowing → RiskEngine.aggregate → final verdict.
 """
 
-import sys
+import pytest
 from pathlib import Path
 
-# Add backend to path
-backend_dir = Path(__file__).parent.parent
-sys.path.insert(0, str(backend_dir))
-
-from services.deepfake_detector import detect_deepfake_longaudio
-from services.risk_engine import RiskEngine
-import librosa
-
-print("=" * 100)
-print("RISK ENGINE COMPREHENSIVE TEST - MULTI-STRATEGY AGGREGATION")
-print("=" * 100)
-
-# Initialize risk engine with thresholds
-risk_engine = RiskEngine(
-    spoof_ratio_threshold=0.15,  # 15% of windows must be spoof
-    max_spoof_threshold=1.0,     # lowered from 2.0
-    mean_spoof_threshold=0.1     # lowered from 0.5
-)
-
-# Test files
-test_cases = [
+_TEST_CASES = [
     {
+        "id": "my_own_voice",
         "name": "My own voice",
-        "path": r"C:\Users\sachi\Downloads\Smart India Hackethon\Original Audio\My_own_voice.wav",
+        "path": Path(r"C:\Users\sachi\Downloads\Smart India Hackethon\Original Audio\My_own_voice.wav"),
         "expected": "BONAFIDE",
-        "description": "Natural human voice (314 sec)"
     },
     {
+        "id": "test_audio",
         "name": "Test_Audio",
-        "path": r"C:\Users\sachi\Downloads\Smart India Hackethon\Original Audio\Test_Audio.mp3",
+        "path": Path(r"C:\Users\sachi\Downloads\Smart India Hackethon\Original Audio\Test_Audio.mp3"),
         "expected": "BONAFIDE",
-        "description": "Natural human voice (48 sec)"
     },
     {
+        "id": "ai_video",
         "name": "AI_video",
-        "path": r"C:\Users\sachi\Downloads\Smart India Hackethon\Ai Generated audio\AI_video.mp3",
+        "path": Path(r"C:\Users\sachi\Downloads\Smart India Hackethon\Ai Generated audio\AI_video.mp3"),
         "expected": "SPOOF",
-        "description": "AI-generated voice (20 sec)"
     },
     {
+        "id": "ai_audio2",
         "name": "Ai_audio2",
-        "path": r"C:\Users\sachi\Downloads\Smart India Hackethon\Ai Generated audio\Ai_audio2.mp3",
+        "path": Path(r"C:\Users\sachi\Downloads\Smart India Hackethon\Ai Generated audio\Ai_audio2.mp3"),
         "expected": "SPOOF",
-        "description": "AI-generated voice (alternate sample)"
-    }
+    },
 ]
 
-results = []
 
-for i, test_case in enumerate(test_cases, 1):
-    print(f"\n{'=' * 100}")
-    print(f"TEST {i}: {test_case['name']}")
-    print(f"{'=' * 100}")
-    print(f"Description: {test_case['description']}")
-    print(f"Expected:    {test_case['expected']}")
-    print()
+@pytest.mark.needs_audio
+@pytest.mark.needs_model
+@pytest.mark.parametrize(
+    "test_case",
+    _TEST_CASES,
+    ids=[tc["id"] for tc in _TEST_CASES],
+)
+def test_risk_engine_pipeline(test_case):
+    """Full pipeline: load → detect_deepfake_longaudio → RiskEngine → assert."""
+    if not test_case["path"].exists():
+        pytest.skip(f"Audio file not found: {test_case['path']}")
 
-    # Check file exists
-    audio_path = Path(test_case['path'])
-    if not audio_path.exists():
-        print(f"[ERROR] File not found: {test_case['path']}")
-        results.append({
-            'name': test_case['name'],
-            'status': 'FAILED',
-            'reason': 'File not found'
-        })
-        continue
+    import librosa
+    from services.deepfake_detector import detect_deepfake_longaudio
+    from services.risk_engine import RiskEngine
 
-    # Load audio
-    try:
-        print("[STEP 1/4] Loading audio...")
-        waveform, sr = librosa.load(str(audio_path), sr=None, mono=True)
-        print(f"           Sample rate: {sr} Hz")
-        print(f"           Duration: {len(waveform) / sr:.2f} seconds")
-        print(f"           Samples: {len(waveform):,}")
-    except Exception as e:
-        print(f"[ERROR] Failed to load audio: {e}")
-        results.append({
-            'name': test_case['name'],
-            'status': 'FAILED',
-            'reason': f'Load error: {e}'
-        })
-        continue
+    waveform, sr = librosa.load(str(test_case["path"]), sr=None, mono=True)
+    assert waveform is not None and waveform.size > 0
 
-    # Run long-audio detection
-    try:
-        print("[STEP 2/4] Running AASIST-L long-audio windowing...")
-        detection = detect_deepfake_longaudio(waveform, sr)
+    detection = detect_deepfake_longaudio(waveform, sr)
+    assert detection.get("success"), f"Detection failed: {detection.get('error')}"
 
-        if not detection.get('success'):
-            print(f"[ERROR] Detection failed: {detection.get('error')}")
-            results.append({
-                'name': test_case['name'],
-                'status': 'FAILED',
-                'reason': detection.get('error')
-            })
-            continue
+    risk_engine = RiskEngine(
+        spoof_ratio_threshold=0.15,
+        max_spoof_threshold=1.0,
+        mean_spoof_threshold=0.1,
+    )
+    risk = risk_engine.aggregate(detection["window_scores"])
+    assert risk.get("success"), f"Risk engine failed: {risk.get('error')}"
 
-        print(f"           {detection['num_windows']} windows analyzed")
+    prediction = risk["final_prediction"]
+    print(
+        f"\n  {test_case['name']}: verdict={prediction}  "
+        f"risk={risk['risk_level']}  confidence={risk['confidence']*100:.0f}%  "
+        f"spoof_ratio={risk['spoof_ratio']*100:.1f}%"
+    )
 
-        # Run risk engine aggregation
-        print("[STEP 3/4] Running Risk Engine aggregation...")
-        risk_assessment = risk_engine.aggregate(detection['window_scores'])
+    assert prediction == test_case["expected"], (
+        f"Expected {test_case['expected']} for {test_case['name']}, "
+        f"got {prediction} (spoof_ratio={risk['spoof_ratio']:.3f})"
+    )
 
-        if not risk_assessment.get('success'):
-            print(f"[ERROR] Risk assessment failed: {risk_assessment.get('error')}")
-            results.append({
-                'name': test_case['name'],
-                'status': 'FAILED',
-                'reason': risk_assessment.get('error')
-            })
-            continue
 
-        # Parse results
-        print("[STEP 4/4] Generating final verdict...")
-        print()
+def test_risk_engine_empty_input():
+    """RiskEngine.aggregate with empty input should return success=False."""
+    from services.risk_engine import RiskEngine
 
-        prediction = risk_assessment['final_prediction']
-        risk_level = risk_assessment['risk_level']
-        confidence = risk_assessment['confidence']
-        spoof_ratio = risk_assessment['spoof_ratio']
-        mean_spoof = risk_assessment['mean_spoof_score']
-        mean_bonafide = risk_assessment['mean_bonafide_score']
-        assessment = risk_assessment['assessment']
+    engine = RiskEngine()
+    result = engine.aggregate([])
+    assert result["success"] is False
 
-        print("=" * 72)
-        print("RISK ENGINE RESULTS")
-        print("=" * 72)
-        print()
-        print(f"  FINAL VERDICT:         {prediction}")
-        print(f"  RISK LEVEL:            {risk_level}")
-        print(f"  CONFIDENCE:            {confidence*100:.1f}%")
-        print()
-        print("  AGGREGATION METRICS:")
-        print(f"    Spoof Ratio:         {spoof_ratio*100:.1f}% ({risk_assessment['num_spoof_windows']}/{risk_assessment['num_total_windows']} windows)")
-        print(f"    Mean Spoof Score:    {mean_spoof:.4f}")
-        print(f"    Mean Bonafide Score: {mean_bonafide:.4f}")
-        print(f"    Max Spoof Score:     {risk_assessment['max_spoof_score']:.4f}")
-        print()
-        print("  STRATEGY BREAKDOWN:")
-        for strategy_key in ['strategy_1', 'strategy_2', 'strategy_3']:
-            strat = risk_assessment[strategy_key]
-            pred_mark = "[AGREE]" if strat['prediction'] == prediction else "[DIFF]"
-            print(f"    {pred_mark} {strat['name']}")
-            print(f"       Threshold: {strat['threshold']}")
-            print(f"       Value:     {strat['value']}")
-            print(f"       Prediction: {strat['prediction']} (confidence: {strat['confidence']*100:.1f}%)")
-        print()
-        print(f"  ASSESSMENT:")
-        print(f"    {assessment}")
-        print()
 
-        # Check if prediction matches expected
-        if prediction == test_case['expected']:
-            print(f"  [PASS] Prediction matches expected: {test_case['expected']}")
-            status = 'PASS'
-        else:
-            print(f"  [FAIL] Expected {test_case['expected']}, got {prediction}")
-            status = 'FAIL'
+def test_risk_engine_all_bonafide():
+    """All-bonafide windows should produce BONAFIDE verdict with LOW risk."""
+    from services.risk_engine import RiskEngine
 
-        results.append({
-            'name': test_case['name'],
-            'status': status,
-            'prediction': prediction,
-            'expected': test_case['expected'],
-            'risk_level': risk_level,
-            'confidence': confidence,
-            'spoof_ratio': spoof_ratio,
-            'assessment': assessment
-        })
+    window_scores = [
+        {"spoof_score": -2.0, "bonafide_score": 3.0, "prediction": "BONAFIDE"},
+        {"spoof_score": -1.5, "bonafide_score": 2.5, "prediction": "BONAFIDE"},
+        {"spoof_score": -2.5, "bonafide_score": 4.0, "prediction": "BONAFIDE"},
+    ]
+    engine = RiskEngine(spoof_ratio_threshold=0.15, max_spoof_threshold=1.0, mean_spoof_threshold=0.1)
+    result = engine.aggregate(window_scores)
 
-    except Exception as e:
-        print(f"[ERROR] Unexpected error: {e}")
-        import traceback
-        traceback.print_exc()
-        results.append({
-            'name': test_case['name'],
-            'status': 'FAILED',
-            'reason': str(e)
-        })
+    assert result["success"] is True
+    assert result["final_prediction"] == "BONAFIDE"
+    assert result["risk_level"] == "LOW"
+    assert result["spoof_ratio"] == 0.0
 
-# Final summary
-print(f"\n{'=' * 100}")
-print("FINAL SUMMARY - RISK ENGINE TEST")
-print(f"{'=' * 100}\n")
 
-passed = sum(1 for r in results if r['status'] == 'PASS')
-failed = sum(1 for r in results if r['status'] in ['FAIL', 'FAILED'])
+def test_risk_engine_all_spoof():
+    """All-spoof windows should produce SPOOF verdict with CRITICAL risk."""
+    from services.risk_engine import RiskEngine
 
-print(f"Total tests:    {len(results)}")
-print(f"Passed:         {passed}")
-print(f"Failed:         {failed}")
-print()
+    window_scores = [
+        {"spoof_score": 3.0, "bonafide_score": -1.0, "prediction": "SPOOF"},
+        {"spoof_score": 2.5, "bonafide_score": -0.5, "prediction": "SPOOF"},
+        {"spoof_score": 4.0, "bonafide_score": -2.0, "prediction": "SPOOF"},
+    ]
+    engine = RiskEngine(spoof_ratio_threshold=0.15, max_spoof_threshold=1.0, mean_spoof_threshold=0.1)
+    result = engine.aggregate(window_scores)
 
-# Summary table
-print("+" + "-" * 20 + "+" + "-" * 14 + "+" + "-" * 11 + "+" + "-" * 11 + "+" + "-" * 16 + "+")
-print("| Audio File       | Expected     | Predicted | Risk      | Status         |")
-print("+" + "-" * 20 + "+" + "-" * 14 + "+" + "-" * 11 + "+" + "-" * 11 + "+" + "-" * 16 + "+")
-
-for r in results:
-    if r['status'] in ['PASS', 'FAIL']:
-        status_mark = "PASS" if r['status'] == 'PASS' else "FAIL"
-        name = r['name'][:18]
-        expected = r['expected']
-        predicted = r['prediction']
-        risk = r['risk_level']
-        print(f"| {name:18} | {expected:12} | {predicted:9} | {risk:9} | {status_mark:14} |")
-    else:
-        name = r['name'][:18]
-        reason = r.get('reason', 'Unknown')[:27]
-        print(f"| {name:18} | ERROR:       | {reason:27} |")
-
-print("+" + "-" * 20 + "+" + "-" * 14 + "+" + "-" * 11 + "+" + "-" * 11 + "+" + "-" * 16 + "+")
-print()
-
-if failed == 0 and passed == 4:
-    print("=" * 100)
-    print("[SUCCESS] ALL TESTS PASSED - RISK ENGINE WORKING CORRECTLY")
-    print("Multi-strategy aggregation successfully identifying genuine vs AI-generated audio")
-    print("=" * 100)
-    sys.exit(0)
-else:
-    print("=" * 100)
-    print(f"RESULTS: {passed} PASS, {failed} FAIL")
-    print("=" * 100)
-    sys.exit(1)
+    assert result["success"] is True
+    assert result["final_prediction"] == "SPOOF"
+    assert result["risk_level"] == "CRITICAL"
+    assert result["spoof_ratio"] == 1.0
