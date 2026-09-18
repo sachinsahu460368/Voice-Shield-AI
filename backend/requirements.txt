@@ -12,12 +12,5 @@ soundfile==0.13.1
 numpy==1.26.4
 
 # --- ML inference ---
-# PyTorch CPU-only build. For GPU/CUDA support, install the appropriate
-# torch+cu* wheel instead (see https://pytorch.org/get-started/locally/).
-#
-# Install CPU-only with:
-#   pip install torch --index-url https://download.pytorch.org/whl/cpu
-#
-# Or install with CUDA (example for CUDA 12.1):
-#   pip install torch --index-url https://download.pytorch.org/whl/cu121
+--extra-index-url https://download.pytorch.org/whl/cpu
 torch>=2.0.0
