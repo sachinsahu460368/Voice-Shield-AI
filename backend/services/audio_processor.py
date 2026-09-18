@@ -93,53 +93,57 @@ def preprocess_audio(
 ) -> dict:
     """
     Run the full preprocessing pipeline on a single uploaded file.
-
-    Parameters
-    ----------
-    input_path : str
-        Path to the temporary uploaded file on disk.
-    original_filename : str
-        Original filename as sent by the browser (for logging only).
-    target_sample_rate : int | None
-        If given, forces FFmpeg to resample to this rate.
-        Falls back to the module-level TARGET_SAMPLE_RATE constant.
-        If both are None the original sample rate is preserved.
-
-    Returns
-    -------
-    dict
-        A result dict with ``success: True`` and metadata, or
-        ``success: False`` and an ``error`` message.
     """
+    import time
+    t0 = time.time()
+
     effective_sr = target_sample_rate if target_sample_rate is not None else TARGET_SAMPLE_RATE
 
     # --- 1. Basic input validation -------------------------------------------
+    logger.info("PREPROCESS 1: input validation START")
     if not input_path or not os.path.isfile(input_path):
         return _error_result("The uploaded file could not be found on the server.")
 
     if os.path.getsize(input_path) == 0:
         return _error_result("The uploaded file is empty.")
+    logger.info("PREPROCESS 1: input validation END")
 
     # --- 2. Ensure FFmpeg is installed ---------------------------------------
+    logger.info("PREPROCESS 2: ffmpeg availability START")
     if not check_ffmpeg():
         return _error_result(
-            "FFmpeg is required for audio preprocessing but was not found. "
-            "Please install FFmpeg and make sure it is available on PATH."
+            "FFmpeg is required for audio preprocessing but was not found."
         )
+    logger.info("PREPROCESS 2: ffmpeg availability END path=%s", get_ffmpeg_executable())
 
     # --- 3. Run FFmpeg -------------------------------------------------------
     wav_path = None
     try:
+        logger.info("PREPROCESS 3: mkstemp START")
         wav_fd, wav_path = tempfile.mkstemp(
             suffix=".wav",
             prefix=f"voiceshield_proc_{uuid.uuid4().hex[:8]}_",
         )
-        os.close(wav_fd)  # We only need the path; FFmpeg writes the file.
+        os.close(wav_fd)
+        logger.info("PREPROCESS 3: mkstemp END path=%s", wav_path)
 
+        logger.info("PREPROCESS 4: FFmpeg START")
+        t_ffmpeg = time.time()
         wav_path = _run_ffmpeg(input_path, wav_path, effective_sr)
+        ffmpeg_ms = (time.time() - t_ffmpeg) * 1000
+        # Re-check and ensure wav_path was indeed generated
+        wav_size = os.path.getsize(wav_path)
+        logger.info("PREPROCESS 4: FFmpeg END elapsed_ms=%.0fms size=%d bytes", ffmpeg_ms, wav_size)
 
         # --- 4. Load with librosa --------------------------------------------
+        logger.info("PREPROCESS 6: librosa.load START")
+        t_librosa = time.time()
         result = _load_with_librosa(wav_path, original_filename)
+        librosa_ms = (time.time() - t_librosa) * 1000
+        logger.info("PREPROCESS 6: librosa.load END elapsed_ms=%.0fms", librosa_ms)
+
+        total_ms = (time.time() - t0) * 1000
+        logger.info("PREPROCESS COMPLETE: total_ms=%.0fms", total_ms)
         return result
 
     except _PreprocessingError as exc:
@@ -148,8 +152,7 @@ def preprocess_audio(
     except Exception as exc:
         logger.exception("Unexpected error while preprocessing %s", original_filename)
         return _error_result(
-            "An unexpected error occurred during audio preprocessing. "
-            "Please try again or use a different file."
+            f"An unexpected error occurred during audio preprocessing: {str(exc)}"
         )
     finally:
         # Clean up the intermediate WAV created by FFmpeg.
@@ -171,17 +174,15 @@ class _PreprocessingError(Exception):
 def _run_ffmpeg(input_path: str, output_path: str, sample_rate: int | None) -> str:
     """
     Convert *input_path* to a mono PCM 16-bit WAV at *output_path*.
-
-    Raises ``_PreprocessingError`` on failure.
     """
     cmd: list[str] = [
         get_ffmpeg_executable(),
-        "-y",               # overwrite output without asking
-        "-i", input_path,   # input file
-        "-vn",              # discard video stream
-        "-ac", "1",         # mono
-        "-acodec", "pcm_s16le",  # 16-bit PCM
-        "-f", "wav",        # output format
+        "-y",
+        "-i", input_path,
+        "-vn",
+        "-ac", "1",
+        "-acodec", "pcm_s16le",
+        "-f", "wav",
     ]
 
     if sample_rate is not None:
@@ -189,55 +190,29 @@ def _run_ffmpeg(input_path: str, output_path: str, sample_rate: int | None) -> s
 
     cmd.append(output_path)
 
+    # Capture stdout/stderr to log on failure
     try:
         proc = subprocess.run(
             cmd,
             capture_output=True,
-            timeout=120,  # generous timeout for big files
+            timeout=180,  # 3 minutes
         )
     except FileNotFoundError:
-        raise _PreprocessingError(
-            "FFmpeg is required for audio preprocessing but was not found. "
-            "Please install FFmpeg and make sure it is available on PATH."
-        )
-    except subprocess.TimeoutExpired:
-        raise _PreprocessingError(
-            "Audio conversion timed out. The file may be too large or corrupted."
-        )
+        raise _PreprocessingError("FFmpeg executable not found.")
+    except subprocess.TimeoutExpired as e:
+        logger.error("FFmpeg timed out. Stderr: %s", e.stderr.decode(errors="replace")[:500] if e.stderr else "N/A")
+        raise _PreprocessingError("Audio conversion timed out.")
+    except Exception as e:
+        logger.exception("Unexpected error running FFmpeg command.")
+        raise _PreprocessingError(f"Unexpected error running FFmpeg: {str(e)}")
 
     if proc.returncode != 0:
         stderr_text = proc.stderr.decode(errors="replace").strip()
-        logger.error("FFmpeg stderr:\n%s", stderr_text)
+        logger.error("FFmpeg failed (rc=%d). Stderr: %s", proc.returncode, stderr_text[:1000])
+        raise _PreprocessingError(f"FFmpeg failed with exit code {proc.returncode}.")
 
-        # Provide a user-friendly message for common FFmpeg errors.
-        lower_err = stderr_text.lower()
-
-        if "does not contain any stream" in lower_err or "no audio" in lower_err:
-            raise _PreprocessingError(
-                "No audio stream was found in the uploaded video."
-            )
-
-        if "invalid data found" in lower_err:
-            raise _PreprocessingError(
-                "The uploaded file appears to be corrupted or is not a valid audio/video file."
-            )
-
-        if "no such file" in lower_err:
-            raise _PreprocessingError(
-                "The uploaded file could not be located for processing."
-            )
-
-        raise _PreprocessingError(
-            "FFmpeg was unable to convert the file. "
-            "The file may be corrupted or in an unsupported format."
-        )
-
-    # Verify that FFmpeg actually produced output.
     if not os.path.isfile(output_path) or os.path.getsize(output_path) == 0:
-        raise _PreprocessingError(
-            "Audio conversion produced an empty file. "
-            "The original file may contain no valid audio data."
-        )
+        raise _PreprocessingError("FFmpeg produced an empty file.")
 
     return output_path
 

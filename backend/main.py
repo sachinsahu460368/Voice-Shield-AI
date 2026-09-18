@@ -16,6 +16,7 @@ import os
 import time
 import uuid
 import tempfile
+from contextlib import asynccontextmanager
 
 import torch
 from fastapi import FastAPI, File, UploadFile, HTTPException
@@ -47,12 +48,47 @@ logger.info(
     torch.get_num_interop_threads(),
 )
 
+# ---------- Lifespan event handler ----------
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: pre-load model
+    logger.info("=== SERVER STARTUP: pre-loading AASIST-L model ===")
+    t0 = time.time()
+    try:
+        _, _ = _load_model()
+        elapsed = time.time() - t0
+        logger.info(
+            "Model pre-loaded successfully in %.2f s", elapsed,
+        )
+    except FileNotFoundError:
+        logger.error(
+            "AASIST-L checkpoint not found — /api/analyze will return 500 "
+            "until the checkpoint is deployed."
+        )
+    except Exception:
+        logger.exception("Failed to pre-load model — will retry on first request")
+
+    # Also verify FFmpeg is available
+    if check_ffmpeg():
+        logger.info("FFmpeg is available")
+    else:
+        logger.warning(
+            "FFmpeg not found at startup — audio preprocessing will fail"
+        )
+
+    logger.info("=== SERVER STARTUP COMPLETE ===")
+    yield
+    # Shutdown logic
+    logger.info("=== SERVER SHUTDOWN ===")
+
 # ---------- App setup ----------
 
 app = FastAPI(
     title="VoiceShield-AI",
     description="AI-Powered Voice Deepfake Detection API",
     version="0.1.0",
+    lifespan=lifespan
 )
 
 # ---------- CORS ----------
@@ -82,46 +118,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ---------- Startup: pre-load model ----------
-# Loading the AASIST-L model lazily on the first /api/analyze request
-# causes a 10-15 second delay that almost always exceeds Render's 30s
-# request timeout.  Pre-loading at startup means the model is warm
-# before any request arrives.
-
-@app.on_event("startup")
-def preload_model():
-    """Pre-load the AASIST-L model during server startup."""
-    logger.info("=== SERVER STARTUP: pre-loading AASIST-L model ===")
-    t0 = time.time()
-    try:
-        model, device = _load_model()
-        elapsed = time.time() - t0
-        logger.info(
-            "Model pre-loaded successfully on %s in %.2f s", device, elapsed,
-        )
-    except FileNotFoundError:
-        logger.error(
-            "AASIST-L checkpoint not found — /api/analyze will return 500 "
-            "until the checkpoint is deployed."
-        )
-    except Exception:
-        logger.exception("Failed to pre-load model — will retry on first request")
-
-    # Also verify FFmpeg is available
-    if check_ffmpeg():
-        logger.info("FFmpeg is available")
-    else:
-        logger.warning(
-            "FFmpeg not found at startup — audio preprocessing will fail"
-        )
-
-    logger.info("=== SERVER STARTUP COMPLETE ===")
-
-
 # ---------- Allowed audio MIME types ----------
-# We check the Content-Type header sent by the browser.
-# This is not foolproof, but catches obvious mistakes.
-
 ALLOWED_AUDIO_TYPES = {
     "audio/mpeg",           # .mp3
     "audio/wav",            # .wav
@@ -136,8 +133,6 @@ ALLOWED_AUDIO_TYPES = {
 }
 
 # ---------- Allowed audio file extensions ----------
-# Fallback for clients (e.g. curl) that send application/octet-stream.
-
 ALLOWED_AUDIO_EXTENSIONS = {
     ".mp3", ".wav", ".m4a", ".ogg", ".flac", ".webm", ".mp4",
 }
@@ -158,23 +153,56 @@ def health_check():
     }
 
 
-@app.get("/api/system-check")
-def system_check():
-    """Detailed system diagnostic for Render investigation."""
-    import sys
-    import platform
-    from services.audio_processor import get_ffmpeg_executable
+@app.get("/api/ffmpeg-check")
+def ffmpeg_check():
+    """Diagnostic endpoint to inspect FFmpeg environment."""
+    from services.audio_processor import get_ffmpeg_executable, check_ffmpeg
+    import subprocess
+    import shutil
+    import time
 
-    return {
-        "python_version": sys.version,
-        "platform": platform.platform(),
-        "torch_version": torch.__version__,
-        "torch_threads": torch.get_num_threads(),
-        "torch_cuda": torch.cuda.is_available(),
-        "torch_cuda_version": torch.version.cuda if torch.cuda.is_available() else None,
-        "ffmpeg_available": os.path.exists(get_ffmpeg_executable()),
-        "ffmpeg_path": get_ffmpeg_executable(),
+    executable = get_ffmpeg_executable()
+    t0 = time.time()
+    result = {
+        "ffmpeg_available": check_ffmpeg(),
+        "shutil_which": shutil.which("ffmpeg"),
+        "ffmpeg_path": executable,
     }
+
+    try:
+        proc = subprocess.run([executable, "-version"], capture_output=True, text=True, timeout=5)
+        result["returncode"] = proc.returncode
+        result["version_output"] = proc.stdout.split("\n")[0] if proc.stdout else ""
+        result["stderr"] = proc.stderr.strip() if proc.stderr else ""
+    except Exception as e:
+        result["error"] = f"error: {str(e)}"
+
+    result["elapsed_ms"] = (time.time() - t0) * 1000
+    return result
+
+@app.get("/api/preprocess-check")
+async def preprocess_check():
+    """Diagnostic endpoint to test preprocessing pipeline with debug.wav."""
+    from services.audio_processor import preprocess_audio
+    import time
+
+    # Path to debug.wav in backend dir
+    debug_path = os.path.join(os.path.dirname(__file__), "debug.wav")
+    if not os.path.exists(debug_path):
+        return {"success": False, "error": f"debug.wav not found at {debug_path}"}
+
+    t0 = time.time()
+    try:
+        result = preprocess_audio(debug_path, "debug.wav")
+        elapsed = (time.time() - t0) * 1000
+        return {
+            "success": result.get("success"),
+            "elapsed_ms": elapsed,
+            "error": result.get("error"),
+            "duration": result.get("duration_seconds")
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 
 # ---------- Analyze endpoint ----------
@@ -197,7 +225,6 @@ async def analyze_audio(audio: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail="No audio file provided.")
 
     # 2. Check MIME type, with extension-based fallback for clients
-    #    (e.g. curl) that send application/octet-stream.
     content_type = audio.content_type or ""
     file_ext = os.path.splitext(audio.filename)[1].lower()
     logger.info(
@@ -341,8 +368,7 @@ async def analyze_audio(audio: UploadFile = File(...)):
             raise HTTPException(status_code=400, detail=error_msg)
 
         # 8. ---- BUILD RESPONSE ----
-        file_size_kb = len(file_content) / 1024
-        duration_str = f"{preprocessing['duration_seconds']:.2f}s"
+        _file_size_kb = len(file_content) / 1024
 
         final_prediction = risk_assessment["final_prediction"]
         risk_level = risk_assessment["risk_level"]
