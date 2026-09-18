@@ -93,6 +93,22 @@ def health_check():
     }
 
 
+@app.get("/api/system-check")
+def system_check():
+    """Detailed system diagnostic for Render investigation."""
+    import torch
+    import sys
+    import platform
+    return {
+        "python_version": sys.version,
+        "platform": platform.platform(),
+        "torch_version": torch.__version__,
+        "torch_cuda": torch.cuda.is_available(),
+        "torch_cuda_version": torch.version.cuda if torch.cuda.is_available() else None,
+        "memory_total_mb": None, # Hard to get reliably without psutil
+    }
+
+
 # ---------- Analyze endpoint ----------
 
 @app.post("/api/analyze")
