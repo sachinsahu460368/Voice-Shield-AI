@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import tempfile
 import uuid
+import imageio_ffmpeg
 
 import librosa
 import numpy as np
@@ -35,8 +36,15 @@ TARGET_SAMPLE_RATE: int | None = None
 # ---------------------------------------------------------------------------
 
 def check_ffmpeg() -> bool:
-    """Return True if the ffmpeg executable is available on PATH."""
-    return shutil.which("ffmpeg") is not None
+    """Return True if the imageio-ffmpeg executable is available."""
+    try:
+        return os.path.exists(imageio_ffmpeg.get_ffmpeg_exe())
+    except Exception:
+        return False
+
+def get_ffmpeg_executable() -> str:
+    """Return the path to the FFmpeg executable."""
+    return imageio_ffmpeg.get_ffmpeg_exe()
 
 
 # ---------------------------------------------------------------------------
@@ -167,7 +175,7 @@ def _run_ffmpeg(input_path: str, output_path: str, sample_rate: int | None) -> s
     Raises ``_PreprocessingError`` on failure.
     """
     cmd: list[str] = [
-        "ffmpeg",
+        get_ffmpeg_executable(),
         "-y",               # overwrite output without asking
         "-i", input_path,   # input file
         "-vn",              # discard video stream

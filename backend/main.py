@@ -99,13 +99,18 @@ def system_check():
     import torch
     import sys
     import platform
+    from services.audio_processor import get_ffmpeg_executable
+    import os
+
     return {
         "python_version": sys.version,
         "platform": platform.platform(),
         "torch_version": torch.__version__,
         "torch_cuda": torch.cuda.is_available(),
         "torch_cuda_version": torch.version.cuda if torch.cuda.is_available() else None,
-        "memory_total_mb": None, # Hard to get reliably without psutil
+        "memory_total_mb": None,
+        "ffmpeg_available": os.path.exists(get_ffmpeg_executable()),
+        "ffmpeg_path": get_ffmpeg_executable(),
     }
 
 
