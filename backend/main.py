@@ -92,8 +92,8 @@ app = FastAPI(
 )
 
 # ---------- CORS ----------
-# Allow the Vite dev server origins AND any Render production URL.
-# The RENDER_EXTERNAL_URL env var is set automatically on Render.
+# Allow the Vite dev server origins AND any Railway / custom production URL.
+# Set RAILWAY_PUBLIC_DOMAIN or FRONTEND_URL in Railway env vars.
 
 _cors_origins = [
     "http://localhost:5173",
@@ -101,6 +101,12 @@ _cors_origins = [
     "http://localhost:5175",
 ]
 
+# Railway: accept the auto-generated public URL
+_railway_domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN")
+if _railway_domain:
+    _cors_origins.append(f"https://{_railway_domain}")
+
+# Render (legacy): keep for backwards compatibility during migration
 _render_url = os.environ.get("RENDER_EXTERNAL_URL")
 if _render_url:
     _cors_origins.append(_render_url)
@@ -150,6 +156,44 @@ def health_check():
         "status": "ok",
         "service": "VoiceShield-AI backend",
         "version": "0.1.0",
+    }
+
+
+@app.get("/api/system-check")
+def system_check():
+    """Diagnostic endpoint: model status, FFmpeg, PyTorch, environment."""
+    import platform
+
+    model_loaded = _load_model is not None
+    try:
+        _, dev = _load_model()
+        model_status = "loaded"
+        device = str(dev)
+    except Exception as e:
+        model_status = f"error: {e}"
+        device = "unknown"
+
+    ffmpeg_ok = check_ffmpeg()
+
+    return {
+        "status": "ok" if model_status == "loaded" and ffmpeg_ok else "degraded",
+        "model": {
+            "name": "AASIST-L",
+            "status": model_status,
+            "device": device,
+        },
+        "ffmpeg_available": ffmpeg_ok,
+        "pytorch": {
+            "version": torch.__version__,
+            "threads_intra": torch.get_num_threads(),
+            "threads_inter": torch.get_num_interop_threads(),
+        },
+        "environment": {
+            "python": platform.python_version(),
+            "platform": platform.platform(),
+            "torch_threads_env": os.environ.get("TORCH_THREADS", "2"),
+            "port": os.environ.get("PORT", "8000"),
+        },
     }
 
 

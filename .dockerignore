@@ -1,0 +1,31 @@
+.git
+.gitignore
+.pytest_cache
+node_modules
+node_modules.zip
+venv
+.venv
+__pycache__
+*.log
+*.pyc
+*.pyo
+*.pyd
+dist
+public
+src
+.oxlintrc.json
+package.json
+vite.config.js
+index.html
+*.md
+
+# Exclude nested venvs inside backend/
+backend/venv
+backend/.venv
+backend/__pycache__
+backend/*.log
+
+# Ensure we do NOT ignore our models or debug files
+!backend/models/
+!backend/models/**/*.pth
+!backend/debug.wav
