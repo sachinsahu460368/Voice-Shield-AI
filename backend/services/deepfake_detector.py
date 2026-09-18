@@ -507,7 +507,7 @@ def _load_model():
 
     # Load checkpoint
     try:
-        checkpoint = torch.load(CHECKPOINT_PATH, map_location=_device)
+        checkpoint = torch.load(CHECKPOINT_PATH, map_location=_device, weights_only=True)
         _model.load_state_dict(checkpoint)
         logger.info("Model loaded successfully")
     except Exception as e:
