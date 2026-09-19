@@ -100,7 +100,8 @@ function App() {
       const formData = new FormData();
       formData.append("audio", file);
 
-      const response = await fetch("http://localhost:8000/api/analyze", {
+      const apiBase = import.meta.env.VITE_API_BASE_URL || "https://voice-shield-ai-production.up.railway.app";
+      const response = await fetch(`${apiBase}/api/analyze`, {
         method: "POST",
         body: formData,
       });
@@ -134,7 +135,7 @@ function App() {
     } catch (error) {
       alert(
         error.message === "Failed to fetch"
-          ? "Cannot connect to the backend server. Make sure it is running on http://localhost:8000"
+          ? `Cannot connect to the backend server at ${import.meta.env.VITE_API_BASE_URL || "https://voice-shield-ai-production.up.railway.app"}`
           : `Analysis failed: ${error.message}`
       );
     } finally {
