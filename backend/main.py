@@ -27,26 +27,11 @@ from services.deepfake_detector import detect_deepfake_longaudio, _load_model
 from services.risk_engine import RiskEngine
 
 # ---------- Logging ----------
-
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(name)-30s  %(levelname)-8s  %(message)s",
 )
 logger = logging.getLogger("voiceshield.main")
-
-# ---------- PyTorch thread limits ----------
-# Render free-tier containers have limited CPU cores.  Without this cap
-# PyTorch spawns one thread per visible CPU (often 4-8), causing memory
-# pressure and context-switch overhead that leads to 502 timeouts.
-
-_TORCH_THREADS = int(os.environ.get("TORCH_THREADS", "2"))
-torch.set_num_threads(_TORCH_THREADS)
-torch.set_num_interop_threads(1)
-logger.info(
-    "PyTorch threads: intra-op=%d  inter-op=%d",
-    torch.get_num_threads(),
-    torch.get_num_interop_threads(),
-)
 
 # ---------- Lifespan event handler ----------
 

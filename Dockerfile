@@ -27,6 +27,8 @@ ENV PYTHONUNBUFFERED=1
 
 # PyTorch CPU thread limit (Railway containers are typically 1-2 vCPU)
 ENV TORCH_THREADS=2
+ENV OMP_NUM_THREADS=1
+ENV MKL_NUM_THREADS=1
 
 # Expose port (documentation only; Railway uses $PORT)
 EXPOSE 8000
